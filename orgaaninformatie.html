@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<title>Frutiger Tetris</title>
+
+<style>
+body{
+ margin:0;
+ font-family:Segoe UI,sans-serif;
+ height:100vh;
+ background:
+  linear-gradient(rgba(0,0,0,.45),rgba(0,0,0,.45)),
+  url("https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/3797460/1e361f6ed83dc2b821eabb63d04bf3c0d7b06fe5/ss_1e361f6ed83dc2b821eabb63d04bf3c0d7b06fe5.1920x1080.jpg");
+ background-size:cover;
+ background-position:center;
+ color:white;
+}
+#screen{position:fixed;inset:0;display:flex;justify-content:center;align-items:center;}
+.menu{background:rgba(0,0,0,.6);padding:24px;border-radius:16px;text-align:center;}
+button{padding:10px 16px;margin:6px;cursor:pointer;}
+#gameArea{display:none;gap:20px;}
+canvas{background:rgba(0,0,0,.9);border:4px solid #00cfff;border-radius:10px;}
+.info{background:rgba(0,0,0,.6);padding:10px;border-radius:10px;margin-bottom:10px;}
+
+#gameOver{
+ position:fixed; inset:0;
+ display:none; flex-direction:column;
+ justify-content:center; align-items:center;
+ background:rgba(0,0,0,.85);
+ font-size:24px; gap:12px;
+}
+</style>
+</head>
+
+<body>
+<div id="screen">
+
+<div class="menu" id="menu">
+ <h1>FRUTIGER TETRIS</h1>
+ <button onclick="start()">Spelen</button>
+</div>
+
+<div id="gameOver">
+ <h1>GAME OVER</h1>
+ <button onclick="restart()">Opnieuw</button>
+ <button onclick="goMenu()">Menu</button>
+</div>
+
+<div id="gameArea">
+ <canvas id="game" width="240" height="480"></canvas>
+ <div>
+  <div class="info">
+   Score: <span id="score">0</span><br>
+   Level: <span id="level">1</span><br>
+   Lines: <span id="lines">0</span>
+  </div>
+  <p>Next</p>
+  <canvas id="next" width="96" height="96"></canvas>
+ </div>
+</div>
+
+</div>
+
+<script>
+/* ===== SETUP ===== */
+const COLS=10, ROWS=20, B=24;
+const LOCK_DELAY=500;
+
+const game=document.getElementById("game");
+const ctx=game.getContext("2d");
+const nextCtx=document.getElementById("next").getContext("2d");
+
+const scoreEl=document.getElementById("score");
+const levelEl=document.getElementById("level");
+const linesEl=document.getElementById("lines");
+
+const menu=document.getElementById("menu");
+const gameArea=document.getElementById("gameArea");
+const gameOverDiv=document.getElementById("gameOver");
+
+/* ===== CONTROLS ===== */
+const controls={
+ left:"ArrowLeft",
+ right:"ArrowRight",
+ softDrop:"ArrowDown",
+ hardDrop:"Space",
+ rotate:"ArrowUp"
+};
+
+/* ===== GAME STATE ===== */
+let grid, cur, nextP;
+let score=0, level=1, lines=0;
+let dropSpeed=700, running=false;
+let lockTimer=null;
+
+/* ===== DAS ===== */
+let das={
+ left:{active:false,timer:0},
+ right:{active:false,timer:0},
+ delay:150,
+ speed:50
+};
+
+/* ===== DATA ===== */
+const SHAPES={
+ I:[[1,1,1,1]],
+ O:[[1,1],[1,1]],
+ T:[[0,1,0],[1,1,1]],
+ S:[[0,1,1],[1,1,0]],
+ Z:[[1,1,0],[0,1,1]],
+ J:[[1,0,0],[1,1,1]],
+ L:[[0,0,1],[1,1,1]]
+};
+const COLORS={
+ I:"#00ffff", O:"#ffff00", T:"#aa00ff",
+ S:"#00ff00", Z:"#ff0000",
+ J:"#0066ff", L:"#ff9900"
+};
+
+/* ===== CORE ===== */
+function piece(){
+ const k=Object.keys(SHAPES);
+ const t=k[Math.random()*k.length|0];
+ return{type:t, shape:SHAPES[t], x:3, y:0};
+}
+
+function collide(p){
+ for(let y=0;y<p.shape.length;y++)
+  for(let x=0;x<p.shape[y].length;x++)
+   if(p.shape[y][x] && grid[y+p.y]?.[x+p.x]!==0)
+    return true;
+ return false;
+}
+
+function rotate(){
+ const s=cur.shape;
+ cur.shape=s[0].map((_,i)=>s.map(r=>r[i]).reverse());
+ if(collide(cur)) cur.shape=s;
+ lockTimer=null;
+}
+
+function ghostY(){
+ let y=cur.y;
+ while(!collide({...cur,y:y+1})) y++;
+ return y;
+}
+
+/* ===== DRAW ===== */
+function drawBlock(x,y,c){
+ ctx.fillStyle=c;
+ ctx.fillRect(x*B,y*B,B,B);
+ ctx.strokeStyle="#000";
+ ctx.strokeRect(x*B,y*B,B,B);
+}
+
+function draw(){
+ ctx.clearRect(0,0,240,480);
+
+ grid.forEach((r,y)=>r.forEach((v,x)=>{
+  if(v) drawBlock(x,y,COLORS[v]);
+ }));
+
+ const gy=ghostY();
+ cur.shape.forEach((r,y)=>r.forEach((v,x)=>{
+  if(v){
+   ctx.setLineDash([6,4]);
+   ctx.strokeStyle="rgba(255,255,255,.6)";
+   ctx.strokeRect((cur.x+x)*B+2,(gy+y)*B+2,B-4,B-4);
+   ctx.setLineDash([]);
+  }
+ }));
+
+ cur.shape.forEach((r,y)=>r.forEach((v,x)=>{
+  if(v) drawBlock(cur.x+x,cur.y+y,COLORS[cur.type]);
+ }));
+}
+
+function drawNext(){
+ nextCtx.clearRect(0,0,96,96);
+ const s=nextP.shape;
+ const bs=96/4;
+ s.forEach((r,y)=>r.forEach((v,x)=>{
+  if(v){
+   nextCtx.fillStyle=COLORS[nextP.type];
+   nextCtx.fillRect(x*bs+16,y*bs+16,bs,bs);
+   nextCtx.strokeRect(x*bs+16,y*bs+16,bs,bs);
+  }
+ }));
+}
+
+/* ===== GAME LOGIC ===== */
+function clearLines(){
+ let c=0;
+ for(let y=ROWS-1;y>=0;y--){
+  if(grid[y].every(v=>v!==0)){
+   grid.splice(y,1);
+   grid.unshift(Array(COLS).fill(0));
+   c++; y++;
+  }
+ }
+ if(c){
+  lines+=c;
+  score+=[0,100,300,500,800][c]*level;
+  if(lines>=level*10){
+   level++;
+   dropSpeed=Math.max(100,700-(level-1)*60);
+  }
+  scoreEl.textContent=score;
+  levelEl.textContent=level;
+  linesEl.textContent=lines;
+ }
+}
+
+function lockPiece(){
+ cur.shape.forEach((r,y)=>r.forEach((v,x)=>{
+  if(v) grid[y+cur.y][x+cur.x]=cur.type;
+ }));
+ clearLines();
+ cur=nextP;
+ nextP=piece();
+ drawNext();
+ lockTimer=null;
+ if(collide(cur)) gameOver();
+}
+
+function drop(){
+ cur.y++;
+ if(collide(cur)){
+  cur.y--;
+  if(lockTimer===null) lockTimer=performance.now();
+  else if(performance.now()-lockTimer>=LOCK_DELAY) lockPiece();
+ } else lockTimer=null;
+}
+
+/* ===== INPUT ===== */
+document.addEventListener("keydown",e=>{
+ if(!running) return;
+
+ if(e.code===controls.left) das.left.active=true;
+ if(e.code===controls.right) das.right.active=true;
+ if(e.code===controls.softDrop) drop();
+ if(e.code===controls.rotate) rotate();
+
+ if(e.code===controls.hardDrop){
+  cur.y=ghostY();
+  lockPiece();
+ }
+});
+
+document.addEventListener("keyup",e=>{
+ if(e.code===controls.left) das.left.active=false;
+ if(e.code===controls.right) das.right.active=false;
+});
+
+/* ===== LOOP ===== */
+function handleDAS(t){
+ ["left","right"].forEach(dir=>{
+  const d=das[dir];
+  if(d.active){
+   if(d.timer===0){ move(dir); d.timer=t+das.delay; }
+   else if(t>=d.timer){ move(dir); d.timer=t+das.speed; }
+  } else d.timer=0;
+ });
+}
+
+function move(dir){
+ if(dir==="left"){cur.x--;if(collide(cur))cur.x++;}
+ if(dir==="right"){cur.x++;if(collide(cur))cur.x--;}
+ lockTimer=null;
+}
+
+let last=0;
+function loop(t){
+ if(!running) return;
+ handleDAS(t);
+ if(t-last>dropSpeed){ drop(); last=t; }
+ draw();
+ requestAnimationFrame(loop);
+}
+
+/* ===== UI ===== */
+function start(){
+ menu.style.display="none";
+ gameOverDiv.style.display="none";
+ gameArea.style.display="flex";
+
+ grid=Array.from({length:ROWS},()=>Array(COLS).fill(0));
+ score=level=lines=0;
+ scoreEl.textContent=levelEl.textContent=linesEl.textContent=0;
+
+ cur=piece(); nextP=piece();
+ if(collide(cur)){ gameOver(); return; }
+
+ drawNext();
+ running=true;
+ requestAnimationFrame(loop);
+}
+
+function gameOver(){
+ running=false;
+ gameOverDiv.style.display="flex";
+}
+
+function restart(){ start(); }
+function goMenu(){
+ gameArea.style.display="none";
+ gameOverDiv.style.display="none";
+ menu.style.display="block";
+}
+</script>
+</body>
+</html>
